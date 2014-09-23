@@ -1,0 +1,4 @@
+"STARTUP.obj",
+"LCD1602Clock.obj" 
+TO "LCD1602Clock" 
+RAMSIZE(256) 

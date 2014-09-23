@@ -1,0 +1,1459 @@
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 1   
+
+
+C51 COMPILER V7.50, COMPILATION OF MODULE LCD1602CLOCK
+OBJECT MODULE PLACED IN LCD1602Clock.OBJ
+COMPILER INVOKED BY: C:\Keil\C51\BIN\C51.EXE LCD1602Clock.c BROWSE DEBUG OBJECTEXTEND
+
+line level    source
+
+   1          /***************************************************************************/
+   2          //LCD1602单片机万年历（带闹钟功能）
+   3          //作者：卜晓旸
+   4          //时间：2011年5月8日
+   5          //版本：1.0
+   6          /***************************************************************************/
+   7          #include<reg52.h>
+   8          
+   9          #define uint unsigned int
+  10          #define uchar unsigned char
+  11          
+  12          //LCD1602引脚定义
+  13          sbit rs=P2^7;   
+  14          sbit rd=P2^6;
+  15          sbit lcdcs=P2^5;
+  16          sbit lcdbacklight1 = P2^1;
+  17          sbit lcdbacklight0 = P2^0;
+  18          uchar backlight = 2;
+  19          //DS18B20定义
+  20          uchar count,s1num,tempint,f,tempth,settemp; //温度整数部分和小数部分;
+  21          int tempdf,c;
+  22          sbit TMDAT=P1^6; //DS18B20数据线
+  23          //DS1302定义
+  24          uchar nian,yue,ri,shi,fen,miao,zhou;
+  25          sbit ACC0=ACC^0;
+  26          sbit ACC7=ACC^7;
+  27          sbit T_RST=P2^2;//ds1302-5
+  28          sbit T_IO=P2^3;//ds1302-6
+  29          sbit T_CLK=P2^4;//ds1302-7
+  30          //显示缓冲区
+  31          uchar lcd1602_one[]="2011-05-08 6 MT1";
+  32          uchar lcd1602_two[]=" 11:08:23  30^C ";
+  33          //运行状态标志位
+  34          uchar status = 0; //0:正常运行 1:年调节 2:月调节 3:日调节 4:周调节 
+  35                                                //5:时调节 6:分调节 7:秒调节 8:闹钟设置是否开启 9:闹钟时设置
+  36                                                          //10:闹钟分设置 11:logo第一位设置 12:logo第二位设置 13:logo第三位设置
+  37                                                          //20:保存设置 21:闹钟模式
+  38          //按键定义
+  39          sbit MODE = P3^2;
+  40          sbit UP = P3^3;
+  41          sbit DOWN = P3^4;
+  42          //每月天数定义 用于日期调整
+  43          code uchar days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  44          //按键按下时当前秒数 用于长时间没有设置操作时时钟进入正常走时状态
+  45          uchar key_click_sec,now_sec;
+  46          //闹钟设置显示缓冲区
+  47          uchar alarm_on[] = "OFF";
+  48          uchar alarm_time[]="07:10";
+  49          //闹钟设置缓冲区
+  50          code uchar alarm_set_one[]="Alarm:";
+  51          code uchar alarm_set_two[]=" Logo:";
+  52          //闹钟显示缓冲区
+  53          code uchar alarm_one[]="*****??:??******";
+  54          code uchar alarm_two[]="*****Alarm******";
+  55          //闹钟用变量定义
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 2   
+
+  56          sbit BEEP = P1^4;
+  57          code uint cyc[]={1800,1600,1440,1351,1200,1079,960};//音阶1-7的半周期数
+  58          code uchar tone[]={13,15,16,16,15,16,13,12,12,13,15,16,16,15,16,13,13, 13,15,16,
+  59          16,15,16,13,12,12,15,13,12,13,12,11,12,6,6,12,15,13,12,6,6,15,13,12,13,12,11,
+  60          12,6,5,6,0xff};// 乐曲《康定情歌》的简谱表
+  61          code uchar time[]={8,8,8,4,4,8,8,12,4,8,8,8,4,4,8,16,8,8,8,8,4,4,8,8,12,4,8,8,4,
+  62          4,4,4,8,24,8,24,8,24,8,16,8,8,8,4,4,4,4,8,16,8,32};// 节拍表
+  63          uchar H0,L0,cnt;
+  64          
+  65          /***************延时函数******************/ 
+  66          void delay(uint ms)
+  67          {
+  68   1              uint i,j;
+  69   1              for (j=0;j<ms;j++)
+  70   1                      for (i=0;i<120;i++);
+  71   1      }
+  72          
+  73          //*************************LCD1602相关函数************************************
+  74          //****************************************************************************
+  75          
+  76          /***************LCD1602写命令函数******************/ 
+  77          void write_command(uchar command)
+  78          {
+  79   1              rs=0;
+  80   1              P0=command;
+  81   1              lcdcs=1;
+  82   1              lcdcs=0;
+  83   1      }
+  84          /***************LCD1602写数据函数******************/ 
+  85          void write_data(uchar data0)
+  86          {
+  87   1              rs=1;
+  88   1              P0=data0;
+  89   1              lcdcs=1;
+  90   1              lcdcs=0;        
+  91   1      }
+  92          /***************初始化LCD1602函数******************/ 
+  93          void init_1602()
+  94          {
+  95   1              rd=0;
+  96   1              delay(15);
+  97   1              write_command(0x38);
+  98   1              delay(5);
+  99   1              write_command(0x0c);
+ 100   1              delay(5);
+ 101   1              write_command(0x06);
+ 102   1              delay(5);
+ 103   1      } 
+ 104          /***************LCD1602时钟显示函数******************/ 
+ 105          void display_1602()
+ 106          {
+ 107   1              uchar j;
+ 108   1              write_command(0x80); //液晶显示位置
+ 109   1              delay(5);
+ 110   1              for (j=0;j<sizeof(lcd1602_one)-1;j++)
+ 111   1              {
+ 112   2                      write_data(lcd1602_one[j]);
+ 113   2                      delay(5);
+ 114   2              }       
+ 115   1              write_command(0x80+0x40 ); //液晶显示位置
+ 116   1              delay(5);
+ 117   1              for (j=0;j<sizeof(lcd1602_two)-1;j++)
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 3   
+
+ 118   1              {
+ 119   2                      write_data(lcd1602_two[j]);
+ 120   2                      delay(5);
+ 121   2              } 
+ 122   1      }
+ 123          /***************LCD1602闹钟设置显示函数******************/ 
+ 124          void display_1602_alarm_set()
+ 125          {
+ 126   1              uchar j;
+ 127   1              write_command(0x80); //液晶显示位置
+ 128   1              delay(5);
+ 129   1              for (j=0;j<sizeof(alarm_set_one)-1;j++)
+ 130   1              {
+ 131   2                      write_data(alarm_set_one[j]);
+ 132   2                      delay(5);
+ 133   2              }       
+ 134   1              for (j=0;j<sizeof(alarm_on)-1;j++)
+ 135   1              {
+ 136   2                      write_data(alarm_on[j]);
+ 137   2                      delay(5);
+ 138   2              }
+ 139   1              write_data(' ');
+ 140   1              delay(5);
+ 141   1              for (j=0;j<sizeof(alarm_time)-1;j++)
+ 142   1              {
+ 143   2                      write_data(alarm_time[j]);
+ 144   2                      delay(5);
+ 145   2              }       
+ 146   1              write_data(' ');
+ 147   1              delay(5);       
+ 148   1              write_command(0x80+0x40 ); //液晶显示位置
+ 149   1              delay(5);
+ 150   1              for (j=0;j<sizeof(alarm_set_two)-1;j++)
+ 151   1              {
+ 152   2                      write_data(alarm_set_two[j]);
+ 153   2                      delay(5);
+ 154   2              } 
+ 155   1              write_data(lcd1602_one[13]);
+ 156   1              delay(5);
+ 157   1              write_data(lcd1602_one[14]);
+ 158   1              delay(5);
+ 159   1              write_data(lcd1602_one[15]);
+ 160   1              delay(5);
+ 161   1              for (j=0;j<7;j++)
+ 162   1              {
+ 163   2                      write_data(' ');
+ 164   2                      delay(5);
+ 165   2              }       
+ 166   1      }
+ 167          /***************LCD1602闹钟显示函数******************/ 
+ 168          void display_1602_alarm()
+ 169          {
+ 170   1              uchar j;
+ 171   1              write_command(0x80); //液晶显示位置
+ 172   1              delay(5);
+ 173   1              for (j=0;j<5;j++)
+ 174   1              {
+ 175   2                      write_data(alarm_one[j]);
+ 176   2                      delay(5);
+ 177   2              }
+ 178   1              for (j=0;j<sizeof(alarm_time)-1;j++)
+ 179   1              {
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 4   
+
+ 180   2                      write_data(alarm_time[j]);
+ 181   2                      delay(5);
+ 182   2              } 
+ 183   1              for (j=10;j<sizeof(alarm_one)-1;j++)
+ 184   1              {
+ 185   2                      write_data(alarm_one[j]);
+ 186   2                      delay(5);
+ 187   2              }
+ 188   1              
+ 189   1              write_command(0x80+0x40); //液晶显示位置
+ 190   1              delay(5);
+ 191   1              for (j=0;j<sizeof(alarm_two)-1;j++)
+ 192   1              {
+ 193   2                      write_data(alarm_two[j]);
+ 194   2                      delay(5);
+ 195   2              } 
+ 196   1      }
+ 197          
+ 198          //*************************DS18B20相关函数************************************
+ 199          //****************************************************************************
+ 200          
+ 201          /***************初始化DS18B20子程序******************/ 
+ 202          void set_ds18b20()
+ 203          {
+ 204   1              while(1)
+ 205   1              { 
+ 206   2                      uchar dela,flag;
+ 207   2                      flag=0;
+ 208   2                      TMDAT=1;
+ 209   2                      dela=1;
+ 210   2                      while(--dela);
+ 211   2                      TMDAT=0; //数据线置低电平
+ 212   2                      dela=250;
+ 213   2                      while(--dela); //低电平保持500us
+ 214   2                      TMDAT=1; //数据线置高电平
+ 215   2                      dela=30;
+ 216   2                      while(--dela); //高电平保持60us
+ 217   2                      while(TMDAT==0) //判断DS18B20是否发出低电平信号
+ 218   2                      {
+ 219   3                              dela=210; //DS18B20响应，延时420us
+ 220   3                              while(--dela);
+ 221   3                              if(TMDAT) //DS18B20发出高电平初始化成功，返回
+ 222   3                              {
+ 223   4                                      flag=1; //DS18B20初始化成功标志         
+ 224   4                                      break;
+ 225   4                              }
+ 226   3                      }
+ 227   2                      if(flag) //初始化成功，再延时480us，时序要求
+ 228   2                      {
+ 229   3                              dela=240;
+ 230   3                              while(--dela);
+ 231   3                              break;
+ 232   3                      }
+ 233   2              }
+ 234   1      }
+ 235          /***************读DS18B20子程序******************/ 
+ 236          void read_ds18b20()
+ 237          {
+ 238   1              uchar dela,i,j,k,temp,temph,templ;
+ 239   1              j=3; //读2位字节数据
+ 240   1              do
+ 241   1              {
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 5   
+
+ 242   2                      for(i=8;i>0;i--) //一个字节分8位读取
+ 243   2                      {
+ 244   3                              temp>>=1; //读取1位右移1位
+ 245   3                              TMDAT=0; //数据线置低电平
+ 246   3                              dela=1;
+ 247   3                              while(--dela);
+ 248   3                              TMDAT=1; //数据线置高电平
+ 249   3                              dela=4;
+ 250   3                              while(--dela); //延时8us
+ 251   3                              if(TMDAT) //读取1位数据
+ 252   3                                      temp|=0x80;                 
+ 253   3                              dela=25; //读取1位数据后延时50us
+ 254   3                              while(--dela);
+ 255   3                      }
+ 256   2                      if(j==3)                      
+ 257   2                              templ=temp; //读取的第一字节存templ
+ 258   2                      if(j==2) 
+ 259   2                              temph=temp; //读取的第二字节存temph
+ 260   2                      if(j==1)  
+ 261   2                              tempth=temp; //读取的第3字节存tempth   TH的值         
+ 262   2              }while(--j);
+ 263   1              f=0;
+ 264   1              if((temph&0xf8)!=0x00) //若温度为负的处理，对二进制补码的处理
+ 265   1              {
+ 266   2                      f=1; //为负温度f置1
+ 267   2                      temph=~temph;
+ 268   2                      templ=~templ;        
+ 269   2                      k=templ+1;
+ 270   2                      templ=k;
+ 271   2                      if(k>255)
+ 272   2                      {
+ 273   3                              temph++;
+ 274   3                      }
+ 275   2              }
+ 276   1              tempdf=templ&0x0f; //将读取的数据转换成温度值，整数部分存tempint,小数部分存tempdf
+ 277   1              c=(tempdf*625);
+ 278   1              tempdf=c;
+ 279   1              templ>>=4;
+ 280   1              temph<<=4;
+ 281   1              tempint=temph|templ; //两字节合并为一个字节
+ 282   1      }
+ 283          /***************写DS18B20子程序******************/ 
+ 284          void write_ds18b20(uchar command)
+ 285          {
+ 286   1              uchar dela,i;
+ 287   1              for(i=8;i>0;i--) //将一字节数据一位一位写入
+ 288   1              {
+ 289   2                      TMDAT=0; //数据线置低电平
+ 290   2                      dela=6; //延时12us
+ 291   2                      while(--dela);
+ 292   2                      TMDAT=command&0x01; //将数据放置在数据线上
+ 293   2                      dela=25; //延时50us
+ 294   2                      while(--dela);
+ 295   2                      command=command>>1; //准备发送下一位数据
+ 296   2                      TMDAT=1; //发送完一位数据，数据线置高电平
+ 297   2              }
+ 298   1      }
+ 299          /**********DS18B20获得温度 更新显示缓冲区********/ 
+ 300          void get_temperature()
+ 301          {
+ 302   1              set_ds18b20(); //初始化DS18B20
+ 303   1              write_ds18b20(0xcc); //发跳过ROM匹配命令
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 6   
+
+ 304   1              write_ds18b20(0x44); //发温度转换命令
+ 305   1              delay(5);
+ 306   1              set_ds18b20();
+ 307   1              write_ds18b20(0xcc); //发跳过ROM匹配命令
+ 308   1              write_ds18b20(0xbe); //发出读温度命令
+ 309   1              read_ds18b20(); //将读出的温度数据保存到tempint和tempdf处
+ 310   1              lcd1602_two[12] = 0x30+tempint%10;
+ 311   1              lcd1602_two[11] = 0x30+tempint%100/10;   
+ 312   1      }
+ 313          
+ 314          //*************************DS1302相关函数*************************************
+ 315          //****************************************************************************
+ 316          
+ 317          /************DS1302：写入操作(上升沿)*******************/ 
+ 318          void write_byte(uchar da)
+ 319          {
+ 320   1              uchar i;
+ 321   1              ACC=da;
+ 322   1              for(i=8;i>0;i--)
+ 323   1              { 
+ 324   2                      T_IO=ACC0;
+ 325   2                      T_CLK=0;     
+ 326   2                      T_CLK=1;
+ 327   2                      ACC=ACC>>1;
+ 328   2              }
+ 329   1      }
+ 330          /*************DS1302：读取操作（下降沿）*****************/
+ 331          uchar read_byte(void)
+ 332          {
+ 333   1              uchar i;
+ 334   1              for(i=0;i<8;i++)
+ 335   1              {
+ 336   2                      ACC=ACC>>1;
+ 337   2                      T_CLK = 1;
+ 338   2                      T_CLK = 0;
+ 339   2                      ACC7 = T_IO;
+ 340   2              }
+ 341   1              return(ACC);
+ 342   1      }
+ 343          /**********DS1302:写入数据（先送地址，再写数据）********/ 
+ 344          void write_1302(uchar addr,uchar da)
+ 345          {
+ 346   1              T_RST=0; //停止工作
+ 347   1              T_CLK=0;                                 
+ 348   1              T_RST=1; //重新工作
+ 349   1              write_byte(addr); //写入地址
+ 350   1              write_byte(da);
+ 351   1              T_RST=0;
+ 352   1              T_CLK=1;
+ 353   1      }
+ 354          /**********DS1302:读取数据（先送地址，再读数据）********/
+ 355          uchar read_1302(uchar addr)
+ 356          {
+ 357   1         uchar temp;
+ 358   1         T_RST=0; //停止工作
+ 359   1         T_CLK=0;  
+ 360   1         T_RST=1; //重新工作
+ 361   1         write_byte(addr); //写入地址
+ 362   1         temp=read_byte();
+ 363   1         T_RST=0;
+ 364   1         T_CLK=1; //停止工作
+ 365   1         return(temp);
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 7   
+
+ 366   1      }
+ 367          /**********DS1302:获取当前温度 更新显示缓冲区***********/
+ 368          void get_1302time()
+ 369          {
+ 370   1              miao = read_1302(0x81);
+ 371   1              fen = read_1302(0x83);
+ 372   1              shi = read_1302(0x85);
+ 373   1              ri = read_1302(0x87);
+ 374   1              yue = read_1302(0x89);
+ 375   1              nian = read_1302(0x8d);
+ 376   1              zhou = read_1302(0x8b);
+ 377   1              lcd1602_two[8] = 0x30+miao%16;
+ 378   1         lcd1602_two[7] = 0x30+miao/16;        
+ 379   1              lcd1602_two[5] = 0x30+fen%16;
+ 380   1         lcd1602_two[4] = 0x30+fen/16;         
+ 381   1              lcd1602_two[2] = 0x30+shi%16;
+ 382   1         lcd1602_two[1] = 0x30+shi/16;         
+ 383   1              lcd1602_one[9] = 0x30+ri%16;
+ 384   1         lcd1602_one[8] = 0x30+ri/16;  
+ 385   1              lcd1602_one[6] = 0x30+yue%16;
+ 386   1         lcd1602_one[5] = 0x30+yue/16;         
+ 387   1              lcd1602_one[3] = 0x30+nian%16;
+ 388   1         lcd1602_one[2] = 0x30+nian/16;
+ 389   1              lcd1602_one[11] = 0x30+zhou%16;  
+ 390   1      }
+ 391          
+ 392          //*****************************中断处理函数***********************************
+ 393          //****************************************************************************
+ 394          
+ 395          /**********定时器0中断用于产生音阶方波***********/
+ 396          void cntint0(void) interrupt 1 
+ 397          {       
+ 398   1              TH0=H0;
+ 399   1              TL0=L0;
+ 400   1              BEEP=~BEEP; // BEEP是音乐信号输出脚，BEEP反相，产生方波
+ 401   1      }
+ 402          /**********定时器1中断用于产生节拍延时***********/
+ 403          void cntint1(void) interrupt 3
+ 404          {       
+ 405   1              cnt++; // 计数初值为0，所以不用赋值
+ 406   1      }
+ 407          
+ 408          //*****************************按键处理函数***********************************
+ 409          //****************************************************************************
+ 410          
+ 411          /**********按键扫描用于设置时间***********/
+ 412          void time_set_key_scan()
+ 413          {
+ 414   1              //年设置
+ 415   1              if(status ==1)
+ 416   1              {
+ 417   2                      write_command(0x80 + 0x03); //光标显示位置
+ 418   2                      delay(5);
+ 419   2                      write_command(0x0d);
+ 420   2                      delay(5);
+ 421   2                      //UP按键处理
+ 422   2                      if(UP==0)
+ 423   2                      {
+ 424   3                              delay(10);
+ 425   3                              if(UP==0)
+ 426   3                              {
+ 427   4                                      lcd1602_one[3] ++;
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 8   
+
+ 428   4                                      if(lcd1602_one[3] > '9')
+ 429   4                                      {
+ 430   5                                              lcd1602_one[3] = '0';
+ 431   5                                              lcd1602_one[2] ++;
+ 432   5                                              if(lcd1602_one[2] > '9')
+ 433   5                                              {
+ 434   6                                                      lcd1602_one[2] = '0';                                                   
+ 435   6                                              }       
+ 436   5                                      }
+ 437   4                                      display_1602();
+ 438   4                                      //获取当前时钟秒数
+ 439   4                                      key_click_sec = read_1302(0x81);
+ 440   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 441   4                              }
+ 442   3                              while(!UP);     
+ 443   3                      }
+ 444   2                      //DOWN按键处理
+ 445   2                      if(DOWN==0)
+ 446   2                      {
+ 447   3                              delay(10);
+ 448   3                              if(DOWN==0)
+ 449   3                              {
+ 450   4                                      lcd1602_one[3] --;
+ 451   4                                      if(lcd1602_one[3] < '0')
+ 452   4                                      {
+ 453   5                                              lcd1602_one[3] = '9';
+ 454   5                                              lcd1602_one[2] --;
+ 455   5                                              if(lcd1602_one[2] < '0')
+ 456   5                                              {
+ 457   6                                                      lcd1602_one[2] = '9';                                                   
+ 458   6                                              }       
+ 459   5                                      }
+ 460   4                                      display_1602();                 
+ 461   4                                      //获取当前时钟秒数
+ 462   4                                      key_click_sec = read_1302(0x81);
+ 463   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 464   4                              }
+ 465   3                              while(!DOWN);   
+ 466   3                      }                                               
+ 467   2              }
+ 468   1              //月设置
+ 469   1              else if(status ==2)
+ 470   1              {
+ 471   2                      write_command(0x80 + 0x06); //光标显示位置
+ 472   2                      delay(5);
+ 473   2                      write_command(0x0d);
+ 474   2                      delay(5);                               
+ 475   2                      //UP按键处理
+ 476   2                      if(UP==0)
+ 477   2                      {
+ 478   3                              delay(10);
+ 479   3                              if(UP==0)
+ 480   3                              {
+ 481   4                                      lcd1602_one[6] ++;
+ 482   4                                      if(lcd1602_one[6] > '9' && lcd1602_one[5] == '0')
+ 483   4                                      {
+ 484   5                                              lcd1602_one[6] = '0';
+ 485   5                                              lcd1602_one[5] ++;
+ 486   5                                      }
+ 487   4                                      if(lcd1602_one[6] > '2' && lcd1602_one[5] == '1')
+ 488   4                                      {
+ 489   5                                              lcd1602_one[6] = '1';
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 9   
+
+ 490   5                                              lcd1602_one[5] = '0';
+ 491   5                                      }
+ 492   4                                      display_1602();                 
+ 493   4                                      //获取当前时钟秒数
+ 494   4                                      key_click_sec = read_1302(0x81);
+ 495   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 496   4                              }
+ 497   3                              while(!UP);     
+ 498   3                      }
+ 499   2                      //DOWN按键处理
+ 500   2                      if(DOWN==0)
+ 501   2                      {
+ 502   3                              delay(10);
+ 503   3                              if(DOWN==0)
+ 504   3                              {
+ 505   4                                      lcd1602_one[6] --;
+ 506   4                                      if(lcd1602_one[6] < '0' && lcd1602_one[5] == '1')
+ 507   4                                      {
+ 508   5                                              lcd1602_one[6] = '9';
+ 509   5                                              lcd1602_one[5] --;
+ 510   5                                      }
+ 511   4                                      if(lcd1602_one[6] < '1' && lcd1602_one[5] == '0')
+ 512   4                                      {
+ 513   5                                              lcd1602_one[6] = '2';
+ 514   5                                              lcd1602_one[5] = '1';
+ 515   5                                      }
+ 516   4                                      display_1602();                 
+ 517   4                                      //获取当前时钟秒数
+ 518   4                                      key_click_sec = read_1302(0x81);
+ 519   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 520   4                              }
+ 521   3                              while(!DOWN);   
+ 522   3                      }                                                               
+ 523   2              }
+ 524   1              //日设置
+ 525   1              else if(status ==3)
+ 526   1              {
+ 527   2                      uchar nowMonthDays = days[(lcd1602_one[5]-0x30)*10+(lcd1602_one[6]-0x30)-1];
+ 528   2                      write_command(0x80 + 0x09); //光标显示位置
+ 529   2                      delay(5);
+ 530   2                      write_command(0x0d);
+ 531   2                      delay(5);                               
+ 532   2                      //UP按键处理
+ 533   2                      if(UP==0)
+ 534   2                      {
+ 535   3                              delay(10);
+ 536   3                              if(UP==0)
+ 537   3                              {
+ 538   4                                      lcd1602_one[9] ++;
+ 539   4                                      if(lcd1602_one[9] > '9')
+ 540   4                                      {
+ 541   5                                              lcd1602_one[9] = '0';
+ 542   5                                              lcd1602_one[8] ++;
+ 543   5                                              if(lcd1602_one[8] > '9')
+ 544   5                                              {
+ 545   6                                                      lcd1602_one[8] = '0';                                                   
+ 546   6                                              }       
+ 547   5                                      }
+ 548   4                                      if((lcd1602_one[8]-0x30)*10+(lcd1602_one[9]-0x30) > nowMonthDays)
+ 549   4                                      {
+ 550   5                                              lcd1602_one[9] = '1';
+ 551   5                                              lcd1602_one[8] = '0';   
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 10  
+
+ 552   5                                      }
+ 553   4                                      display_1602();                 
+ 554   4                                      //获取当前时钟秒数
+ 555   4                                      key_click_sec = read_1302(0x81);
+ 556   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 557   4                              }
+ 558   3                              while(!UP);     
+ 559   3                      }
+ 560   2                      //DOWN按键处理
+ 561   2                      if(DOWN==0)
+ 562   2                      {
+ 563   3                              delay(10);
+ 564   3                              if(DOWN==0)
+ 565   3                              {
+ 566   4                                      lcd1602_one[9] --;
+ 567   4                                      if(lcd1602_one[9] < '0')
+ 568   4                                      {
+ 569   5                                              lcd1602_one[9] = '9';
+ 570   5                                              lcd1602_one[8] --;
+ 571   5                                              if(lcd1602_one[8] < '0')
+ 572   5                                              {
+ 573   6                                                      lcd1602_one[8] = '9';                                                   
+ 574   6                                              }       
+ 575   5                                      }
+ 576   4                                      if((lcd1602_one[8]-0x30)*10+(lcd1602_one[9]-0x30) < 1)
+ 577   4                                      {
+ 578   5                                              lcd1602_one[9] = nowMonthDays%10 + 0x30;
+ 579   5                                              lcd1602_one[8] = nowMonthDays/10 + 0x30;;       
+ 580   5                                      }
+ 581   4                                      display_1602();                 
+ 582   4                                      //获取当前时钟秒数
+ 583   4                                      key_click_sec = read_1302(0x81);
+ 584   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 585   4                              }
+ 586   3                              while(!DOWN);   
+ 587   3                      }                                               
+ 588   2              }
+ 589   1              //周设置
+ 590   1              else if(status ==4)
+ 591   1              {
+ 592   2                      write_command(0x80 + 0x0b); //光标显示位置
+ 593   2                      delay(5);
+ 594   2                      write_command(0x0d);
+ 595   2                      delay(5);                               
+ 596   2                      //UP按键处理
+ 597   2                      if(UP==0)
+ 598   2                      {
+ 599   3                              delay(10);
+ 600   3                              if(UP==0)
+ 601   3                              {
+ 602   4                                      lcd1602_one[11] ++;
+ 603   4                                      if(lcd1602_one[11] > '7')
+ 604   4                                      {
+ 605   5                                              lcd1602_one[11] = '1';
+ 606   5                                      }
+ 607   4                                      display_1602();                 
+ 608   4                                      //获取当前时钟秒数
+ 609   4                                      key_click_sec = read_1302(0x81);
+ 610   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 611   4                              }
+ 612   3                              while(!UP);     
+ 613   3                      }
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 11  
+
+ 614   2                      //DOWN按键处理
+ 615   2                      if(DOWN==0)
+ 616   2                      {
+ 617   3                              delay(10);
+ 618   3                              if(DOWN==0)
+ 619   3                              {
+ 620   4                                      lcd1602_one[11] --;
+ 621   4                                      if(lcd1602_one[11] < '1')
+ 622   4                                      {
+ 623   5                                              lcd1602_one[11] = '7';
+ 624   5                                      }
+ 625   4                                      display_1602();                 
+ 626   4                                      //获取当前时钟秒数
+ 627   4                                      key_click_sec = read_1302(0x81);
+ 628   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 629   4                              }
+ 630   3                              while(!DOWN);   
+ 631   3                      }                                               
+ 632   2              }
+ 633   1              //时设置
+ 634   1              else if(status ==5)
+ 635   1              {
+ 636   2                      write_command(0x80 + 0x40 + 0x02); //光标显示位置
+ 637   2                      delay(5);
+ 638   2                      write_command(0x0d);
+ 639   2                      delay(5);                               
+ 640   2                      //UP按键处理
+ 641   2                      if(UP==0)
+ 642   2                      {
+ 643   3                              delay(10);
+ 644   3                              if(UP==0)
+ 645   3                              {
+ 646   4                                      lcd1602_two[2] ++;
+ 647   4                                      if(lcd1602_two[2] > '9')
+ 648   4                                      {
+ 649   5                                              lcd1602_two[2] = '0';
+ 650   5                                              lcd1602_two[1] ++;
+ 651   5                                              if(lcd1602_two[1] > '9')
+ 652   5                                              {
+ 653   6                                                      lcd1602_two[1] = '0';                                                   
+ 654   6                                              }       
+ 655   5                                      }
+ 656   4                                      if((lcd1602_two[1]-0x30)*10+(lcd1602_two[2]-0x30) > 23)
+ 657   4                                      {
+ 658   5                                              lcd1602_two[2] = '0';
+ 659   5                                              lcd1602_two[1] = '0';   
+ 660   5                                      }
+ 661   4                                      display_1602();                 
+ 662   4                                      //获取当前时钟秒数
+ 663   4                                      key_click_sec = read_1302(0x81);
+ 664   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 665   4                              }
+ 666   3                              while(!UP);     
+ 667   3                      }
+ 668   2                      //DOWN按键处理
+ 669   2                      if(DOWN==0)
+ 670   2                      {
+ 671   3                              delay(10);
+ 672   3                              if(DOWN==0)
+ 673   3                              {
+ 674   4                                      lcd1602_two[2] --;
+ 675   4                                      if(lcd1602_two[1] != '0' && lcd1602_two[2] < '0')
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 12  
+
+ 676   4                                      {
+ 677   5                                              lcd1602_two[2] = '9';
+ 678   5                                              lcd1602_two[1] --;
+ 679   5                                              if(lcd1602_two[1] < '0')
+ 680   5                                              {
+ 681   6                                                      lcd1602_two[1] = '9';                                                   
+ 682   6                                              }       
+ 683   5                                      }
+ 684   4                                      if(lcd1602_two[1] == '0' && lcd1602_two[2] < '0')
+ 685   4                                      {
+ 686   5                                              lcd1602_two[2] = '3';
+ 687   5                                              lcd1602_two[1] = '2';   
+ 688   5                                      }
+ 689   4                                      display_1602();                 
+ 690   4                                      //获取当前时钟秒数
+ 691   4                                      key_click_sec = read_1302(0x81);
+ 692   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 693   4                              }
+ 694   3                              while(!DOWN);   
+ 695   3                      }                                               
+ 696   2              }
+ 697   1              //分设置
+ 698   1              else if(status ==6)
+ 699   1              {
+ 700   2                      write_command(0x80 + 0x40 + 0x05); //光标显示位置
+ 701   2                      delay(5);
+ 702   2                      write_command(0x0d);
+ 703   2                      delay(5);                               
+ 704   2                      //UP按键处理
+ 705   2                      if(UP==0)
+ 706   2                      {
+ 707   3                              delay(10);
+ 708   3                              if(UP==0)
+ 709   3                              {
+ 710   4                                      lcd1602_two[5] ++;
+ 711   4                                      if(lcd1602_two[5] > '9')
+ 712   4                                      {
+ 713   5                                              lcd1602_two[5] = '0';
+ 714   5                                              lcd1602_two[4] ++;
+ 715   5                                              if(lcd1602_two[4] > '9')
+ 716   5                                              {
+ 717   6                                                      lcd1602_two[4] = '0';                                                   
+ 718   6                                              }       
+ 719   5                                      }
+ 720   4                                      if((lcd1602_two[4]-0x30)*10+(lcd1602_two[5]-0x30) > 59)
+ 721   4                                      {
+ 722   5                                              lcd1602_two[5] = '0';
+ 723   5                                              lcd1602_two[4] = '0';   
+ 724   5                                      }
+ 725   4                                      display_1602();                 
+ 726   4                                      //获取当前时钟秒数
+ 727   4                                      key_click_sec = read_1302(0x81);
+ 728   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 729   4                              }
+ 730   3                              while(!UP);     
+ 731   3                      }
+ 732   2                      //DOWN按键处理
+ 733   2                      if(DOWN==0)
+ 734   2                      {
+ 735   3                              delay(10);
+ 736   3                              if(DOWN==0)
+ 737   3                              {
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 13  
+
+ 738   4                                      lcd1602_two[5] --;
+ 739   4                                      if(lcd1602_two[4] != '0' && lcd1602_two[5] < '0')
+ 740   4                                      {
+ 741   5                                              lcd1602_two[5] = '9';
+ 742   5                                              lcd1602_two[4] --;
+ 743   5                                              if(lcd1602_two[4] < '0')
+ 744   5                                              {
+ 745   6                                                      lcd1602_two[4] = '9';                                                   
+ 746   6                                              }       
+ 747   5                                      }
+ 748   4                                      if(lcd1602_two[4] == '0' && lcd1602_two[5] < '0')
+ 749   4                                      {
+ 750   5                                              lcd1602_two[5] = '9';
+ 751   5                                              lcd1602_two[4] = '5';   
+ 752   5                                      }
+ 753   4                                      display_1602();                 
+ 754   4                                      //获取当前时钟秒数
+ 755   4                                      key_click_sec = read_1302(0x81);
+ 756   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 757   4                              }
+ 758   3                              while(!DOWN);   
+ 759   3                      }                                               
+ 760   2              }
+ 761   1              //秒设置
+ 762   1              else if(status ==7)
+ 763   1              {
+ 764   2                      write_command(0x80 + 0x40 + 0x08); //光标显示位置
+ 765   2                      delay(5);
+ 766   2                      write_command(0x0d);
+ 767   2                      delay(5);                               
+ 768   2                      //UP按键处理
+ 769   2                      if(UP==0)
+ 770   2                      {
+ 771   3                              delay(10);
+ 772   3                              if(UP==0)
+ 773   3                              {
+ 774   4                                      lcd1602_two[8] ++;
+ 775   4                                      if(lcd1602_two[8] > '9')
+ 776   4                                      {
+ 777   5                                              lcd1602_two[8] = '0';
+ 778   5                                              lcd1602_two[7] ++;
+ 779   5                                              if(lcd1602_two[7] > '9')
+ 780   5                                              {
+ 781   6                                                      lcd1602_two[7] = '0';                                                   
+ 782   6                                              }       
+ 783   5                                      }
+ 784   4                                      if((lcd1602_two[7]-0x30)*10+(lcd1602_two[8]-0x30) > 59)
+ 785   4                                      {
+ 786   5                                              lcd1602_two[8] = '0';
+ 787   5                                              lcd1602_two[7] = '0';   
+ 788   5                                      }
+ 789   4                                      display_1602();                 
+ 790   4                                      //获取当前时钟秒数
+ 791   4                                      key_click_sec = read_1302(0x81);
+ 792   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 793   4                              }
+ 794   3                              while(!UP);     
+ 795   3                      }
+ 796   2                      //DOWN按键处理
+ 797   2                      if(DOWN==0)
+ 798   2                      {
+ 799   3                              delay(10);
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 14  
+
+ 800   3                              if(DOWN==0)
+ 801   3                              {
+ 802   4                                      lcd1602_two[8] --;
+ 803   4                                      if(lcd1602_two[7] != '0' && lcd1602_two[8] < '0')
+ 804   4                                      {
+ 805   5                                              lcd1602_two[8] = '9';
+ 806   5                                              lcd1602_two[7] --;
+ 807   5                                              if(lcd1602_two[7] < '0')
+ 808   5                                              {
+ 809   6                                                      lcd1602_two[7] = '9';                                                   
+ 810   6                                              }       
+ 811   5                                      }
+ 812   4                                      if(lcd1602_two[7] == '0' && lcd1602_two[8] < '0')
+ 813   4                                      {
+ 814   5                                              lcd1602_two[8] = '9';
+ 815   5                                              lcd1602_two[7] = '5';   
+ 816   5                                      }
+ 817   4                                      display_1602();                 
+ 818   4                                      //获取当前时钟秒数
+ 819   4                                      key_click_sec = read_1302(0x81);
+ 820   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 821   4                              }
+ 822   3                              while(!DOWN);   
+ 823   3                      }                                               
+ 824   2              }
+ 825   1      }
+ 826          /**********按键扫描用于设置闹钟***********/
+ 827          void alarm_key_scan()
+ 828          {
+ 829   1              //闹钟设置模式
+ 830   1              if(status == 8)
+ 831   1              {
+ 832   2                      write_command(0x80 + 0x08); //光标显示位置
+ 833   2                      delay(5);
+ 834   2                      write_command(0x0d);
+ 835   2                      delay(5);                               
+ 836   2                      //UP按键处理
+ 837   2                      if(UP==0)
+ 838   2                      {
+ 839   3                              delay(10);
+ 840   3                              if(UP==0)
+ 841   3                              {
+ 842   4                                      if(alarm_on[2] == 'N') //闹钟开
+ 843   4                                      {
+ 844   5                                              alarm_on[0] = 'O';      
+ 845   5                                              alarm_on[1] = 'F';      
+ 846   5                                              alarm_on[2] = 'F';      
+ 847   5                                      }
+ 848   4                                      else
+ 849   4                                      {
+ 850   5                                              alarm_on[0] = ' ';      
+ 851   5                                              alarm_on[1] = 'O';      
+ 852   5                                              alarm_on[2] = 'N';                                              
+ 853   5                                      }
+ 854   4                                      display_1602_alarm_set();                       
+ 855   4                                      //获取当前时钟秒数
+ 856   4                                      key_click_sec = read_1302(0x81);
+ 857   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 858   4                              }
+ 859   3                              while(!UP);     
+ 860   3                      }
+ 861   2                      //DOWN按键处理
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 15  
+
+ 862   2                      if(DOWN==0)
+ 863   2                      {
+ 864   3                              delay(10);
+ 865   3                              if(DOWN==0)
+ 866   3                              {
+ 867   4                                      if(alarm_on[2] == 'N') //闹钟开
+ 868   4                                      {
+ 869   5                                              alarm_on[0] = 'O';      
+ 870   5                                              alarm_on[1] = 'F';      
+ 871   5                                              alarm_on[2] = 'F';      
+ 872   5                                      }
+ 873   4                                      else
+ 874   4                                      {
+ 875   5                                              alarm_on[0] = ' ';      
+ 876   5                                              alarm_on[1] = 'O';      
+ 877   5                                              alarm_on[2] = 'N';                                              
+ 878   5                                      }
+ 879   4                                      display_1602_alarm_set();                       
+ 880   4                                      //获取当前时钟秒数
+ 881   4                                      key_click_sec = read_1302(0x81);
+ 882   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 883   4                              }
+ 884   3                              while(!DOWN);   
+ 885   3                      }                                               
+ 886   2              }
+ 887   1              //闹钟时设置
+ 888   1              else if(status == 9)
+ 889   1              {
+ 890   2                      write_command(0x80 + 0x0b); //光标显示位置
+ 891   2                      delay(5);
+ 892   2                      write_command(0x0d);
+ 893   2                      delay(5);                               
+ 894   2                      //UP按键处理
+ 895   2                      if(UP==0)
+ 896   2                      {
+ 897   3                              delay(10);
+ 898   3                              if(UP==0)
+ 899   3                              {
+ 900   4                                      alarm_time[1] ++;
+ 901   4                                      if(alarm_time[1] > '9')
+ 902   4                                      {
+ 903   5                                              alarm_time[1] = '0';
+ 904   5                                              alarm_time[0] ++;
+ 905   5                                              if(alarm_time[0] > '9')
+ 906   5                                              {
+ 907   6                                                      alarm_time[0] = '0';                                                    
+ 908   6                                              }       
+ 909   5                                      }
+ 910   4                                      if((alarm_time[0]-0x30)*10+(alarm_time[1]-0x30) > 23)
+ 911   4                                      {
+ 912   5                                              alarm_time[1] = '0';
+ 913   5                                              alarm_time[0] = '0';    
+ 914   5                                      }
+ 915   4                                      display_1602_alarm_set();                       
+ 916   4                                      //获取当前时钟秒数
+ 917   4                                      key_click_sec = read_1302(0x81);
+ 918   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 919   4                              }
+ 920   3                              while(!UP);     
+ 921   3                      }
+ 922   2                      //DOWN按键处理
+ 923   2                      if(DOWN==0)
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 16  
+
+ 924   2                      {
+ 925   3                              delay(10);
+ 926   3                              if(DOWN==0)
+ 927   3                              {
+ 928   4                                      alarm_time[1] --;
+ 929   4                                      if(alarm_time[0] != '0' && alarm_time[1] < '0')
+ 930   4                                      {
+ 931   5                                              alarm_time[1] = '9';
+ 932   5                                              alarm_time[0] --;
+ 933   5                                              if(alarm_time[0] < '0')
+ 934   5                                              {
+ 935   6                                                      alarm_time[0] = '9';                                                    
+ 936   6                                              }       
+ 937   5                                      }
+ 938   4                                      if(alarm_time[0] == '0' && alarm_time[1] < '0')
+ 939   4                                      {
+ 940   5                                              alarm_time[1] = '3';
+ 941   5                                              alarm_time[0] = '2';    
+ 942   5                                      }
+ 943   4                                      display_1602_alarm_set();                       
+ 944   4                                      //获取当前时钟秒数
+ 945   4                                      key_click_sec = read_1302(0x81);
+ 946   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 947   4                              }
+ 948   3                              while(!DOWN);   
+ 949   3                      }                                               
+ 950   2              }
+ 951   1              //闹钟分设置
+ 952   1              else if(status == 10)
+ 953   1              {
+ 954   2                      write_command(0x80 + 0x0e); //光标显示位置
+ 955   2                      delay(5);
+ 956   2                      write_command(0x0d);
+ 957   2                      delay(5);                               
+ 958   2                      //UP按键处理
+ 959   2                      if(UP==0)
+ 960   2                      {
+ 961   3                              delay(10);
+ 962   3                              if(UP==0)
+ 963   3                              {
+ 964   4                                      alarm_time[4] ++;
+ 965   4                                      if(alarm_time[4] > '9')
+ 966   4                                      {
+ 967   5                                              alarm_time[4] = '0';
+ 968   5                                              alarm_time[3] ++;
+ 969   5                                              if(alarm_time[3] > '9')
+ 970   5                                              {
+ 971   6                                                      alarm_time[3] = '0';                                                    
+ 972   6                                              }       
+ 973   5                                      }
+ 974   4                                      if((alarm_time[3]-0x30)*10+(alarm_time[4]-0x30) > 59)
+ 975   4                                      {
+ 976   5                                              alarm_time[4] = '0';
+ 977   5                                              alarm_time[3] = '0';    
+ 978   5                                      }
+ 979   4                                      display_1602_alarm_set();                       
+ 980   4                                      //获取当前时钟秒数
+ 981   4                                      key_click_sec = read_1302(0x81);
+ 982   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+ 983   4                              }
+ 984   3                              while(!UP);     
+ 985   3                      }
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 17  
+
+ 986   2                      //DOWN按键处理
+ 987   2                      if(DOWN==0)
+ 988   2                      {
+ 989   3                              delay(10);
+ 990   3                              if(DOWN==0)
+ 991   3                              {
+ 992   4                                      alarm_time[4] --;
+ 993   4                                      if(alarm_time[3] != '0' && alarm_time[4] < '0')
+ 994   4                                      {
+ 995   5                                              alarm_time[4] = '9';
+ 996   5                                              alarm_time[3] --;
+ 997   5                                              if(alarm_time[3] < '0')
+ 998   5                                              {
+ 999   6                                                      alarm_time[3] = '9';                                                    
+1000   6                                              }       
+1001   5                                      }
+1002   4                                      if(alarm_time[3] == '0' && alarm_time[4] < '0')
+1003   4                                      {
+1004   5                                              alarm_time[4] = '9';
+1005   5                                              alarm_time[3] = '5';    
+1006   5                                      }
+1007   4                                      display_1602_alarm_set();                       
+1008   4                                      //获取当前时钟秒数
+1009   4                                      key_click_sec = read_1302(0x81);
+1010   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1011   4                              }
+1012   3                              while(!DOWN);   
+1013   3                      }                                               
+1014   2              }       
+1015   1      }
+1016          /**********按键扫描用于设置logo***********/
+1017          void logo_key_scan()
+1018          {
+1019   1              //logo第一位设置
+1020   1              if(status == 11)
+1021   1              {
+1022   2                      write_command(0x80 + 0x40 + 0x06); //光标显示位置
+1023   2                      delay(5);
+1024   2                      write_command(0x0d);
+1025   2                      delay(5);                               
+1026   2                      //UP按键处理
+1027   2                      if(UP==0)
+1028   2                      {
+1029   3                              delay(10);
+1030   3                              if(UP==0)
+1031   3                              {
+1032   4                                      lcd1602_one[13] ++;
+1033   4                                      if(lcd1602_one[13] > 'z')
+1034   4                                      {
+1035   5                                              lcd1602_one[13] = '0';
+1036   5                                      }
+1037   4                                      display_1602_alarm_set();                       
+1038   4                                      //获取当前时钟秒数
+1039   4                                      key_click_sec = read_1302(0x81);
+1040   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1041   4                              }
+1042   3                              while(!UP);     
+1043   3                      }
+1044   2                      //DOWN按键处理
+1045   2                      if(DOWN==0)
+1046   2                      {
+1047   3                              delay(10);
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 18  
+
+1048   3                              if(DOWN==0)
+1049   3                              {
+1050   4                                      lcd1602_one[13] --;
+1051   4                                      if(lcd1602_one[13] < '0')
+1052   4                                      {
+1053   5                                              lcd1602_one[13] = 'z';
+1054   5                                      }
+1055   4                                      display_1602_alarm_set();                       
+1056   4                                      //获取当前时钟秒数
+1057   4                                      key_click_sec = read_1302(0x81);
+1058   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1059   4                              }
+1060   3                              while(!DOWN);   
+1061   3                      }                                               
+1062   2              }       
+1063   1              //logo第二位设置
+1064   1              else if(status == 12)
+1065   1              {
+1066   2                      write_command(0x80 + 0x40 + 0x07); //光标显示位置
+1067   2                      delay(5);
+1068   2                      write_command(0x0d);
+1069   2                      delay(5);                               
+1070   2                      //UP按键处理
+1071   2                      if(UP==0)
+1072   2                      {
+1073   3                              delay(10);
+1074   3                              if(UP==0)
+1075   3                              {
+1076   4                                      lcd1602_one[14] ++;
+1077   4                                      if(lcd1602_one[14] > 'z')
+1078   4                                      {
+1079   5                                              lcd1602_one[14] = '0';
+1080   5                                      }
+1081   4                                      display_1602_alarm_set();                       
+1082   4                                      //获取当前时钟秒数
+1083   4                                      key_click_sec = read_1302(0x81);
+1084   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1085   4                              }
+1086   3                              while(!UP);     
+1087   3                      }
+1088   2                      //DOWN按键处理
+1089   2                      if(DOWN==0)
+1090   2                      {
+1091   3                              delay(10);
+1092   3                              if(DOWN==0)
+1093   3                              {
+1094   4                                      lcd1602_one[14] --;
+1095   4                                      if(lcd1602_one[14] < '0')
+1096   4                                      {
+1097   5                                              lcd1602_one[14] = 'z';
+1098   5                                      }
+1099   4                                      display_1602_alarm_set();                       
+1100   4                                      //获取当前时钟秒数
+1101   4                                      key_click_sec = read_1302(0x81);
+1102   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1103   4                              }
+1104   3                              while(!DOWN);   
+1105   3                      }                                               
+1106   2              }       
+1107   1              //logo第三位设置
+1108   1              else if(status == 13)
+1109   1              {
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 19  
+
+1110   2                      write_command(0x80 + 0x40 + 0x08); //光标显示位置
+1111   2                      delay(5);
+1112   2                      write_command(0x0d);
+1113   2                      delay(5);                               
+1114   2                      //UP按键处理
+1115   2                      if(UP==0)
+1116   2                      {
+1117   3                              delay(10);
+1118   3                              if(UP==0)
+1119   3                              {
+1120   4                                      lcd1602_one[15] ++;
+1121   4                                      if(lcd1602_one[15] > 'z')
+1122   4                                      {
+1123   5                                              lcd1602_one[15] = '0';
+1124   5                                      }
+1125   4                                      display_1602_alarm_set();                       
+1126   4                                      //获取当前时钟秒数
+1127   4                                      key_click_sec = read_1302(0x81);
+1128   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1129   4                              }
+1130   3                              while(!UP);     
+1131   3                      }
+1132   2                      //DOWN按键处理
+1133   2                      if(DOWN==0)
+1134   2                      {
+1135   3                              delay(10);
+1136   3                              if(DOWN==0)
+1137   3                              {
+1138   4                                      lcd1602_one[15] --;
+1139   4                                      if(lcd1602_one[15] < '0')
+1140   4                                      {
+1141   5                                              lcd1602_one[15] = 'z';
+1142   5                                      }
+1143   4                                      display_1602_alarm_set();                       
+1144   4                                      //获取当前时钟秒数
+1145   4                                      key_click_sec = read_1302(0x81);
+1146   4                                      key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);                       
+1147   4                              }
+1148   3                              while(!DOWN);   
+1149   3                      }                                               
+1150   2              }       
+1151   1      }
+1152          /**********按键扫描用于设置模式调节***********/
+1153          void mode_key_scan()
+1154          {       
+1155   1              if(MODE==0)
+1156   1              {
+1157   2                      delay(10);
+1158   2                      if(MODE==0)
+1159   2                      {
+1160   3                              status++;
+1161   3                              if(status>7 && status<11)
+1162   3                              {
+1163   4                                      display_1602_alarm_set();
+1164   4                              }
+1165   3                              if(status>13)
+1166   3                              {
+1167   4                                      status = 20;
+1168   4                              }
+1169   3                              //获取当前时钟秒数
+1170   3                              key_click_sec = read_1302(0x81);
+1171   3                              key_click_sec = (key_click_sec/16)*10+(key_click_sec%16);
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 20  
+
+1172   3                      }
+1173   2                      while(!MODE);   
+1174   2              }                                                               
+1175   1              if(status == 0)
+1176   1              {
+1177   2                      //DOWN按键处理 用于背光控制
+1178   2                      if(UP==0)
+1179   2                      {
+1180   3                              delay(10);
+1181   3                              if(UP==0)
+1182   3                              {
+1183   4                                      backlight ++;
+1184   4                                      if(backlight > 2)
+1185   4                                      {
+1186   5                                              backlight = 0;
+1187   5                                      }                               
+1188   4                                      if(backlight == 0)
+1189   4                                      {
+1190   5                                              lcdbacklight0 = 1;                              
+1191   5                                              lcdbacklight1 = 1;
+1192   5                                      }
+1193   4                                      else if(backlight == 1)
+1194   4                                      {
+1195   5                                              lcdbacklight0 = 0;                              
+1196   5                                              lcdbacklight1 = 1;                              
+1197   5                                      }
+1198   4                                      else
+1199   4                                      {
+1200   5                                              lcdbacklight0 = 1;                              
+1201   5                                              lcdbacklight1 = 0;                              
+1202   5                                      }
+1203   4                              }
+1204   3                              while(!UP);     
+1205   3                      }                                               
+1206   2              }
+1207   1      }
+1208          
+1209          //*************************主函数*********************************************
+1210          //****************************************************************************
+1211          void main()
+1212          {
+1213   1              //闹钟用变量定义
+1214   1              uchar  i,j,a,t;
+1215   1              uint b;
+1216   1              //将液晶显示^C改为摄氏符号
+1217   1              lcd1602_two[13] = 0xdf;
+1218   1              //初始化液晶
+1219   1              init_1602();
+1220   1              //初始化DS1302
+1221   1              if(read_1302(0xff) == 0xaa)//1302未被初始化
+1222   1              {       
+1223   2                      //读取alarm值
+1224   2                      alarm_time[4] = 0x30 + read_1302(0xd1)%16;
+1225   2                      alarm_time[3] = 0x30 + read_1302(0xd1)/16;
+1226   2                      alarm_time[1] = 0x30 + read_1302(0xd3)%16;
+1227   2                      alarm_time[0] = 0x30 + read_1302(0xd3)/16;
+1228   2                      if(read_1302(0xc5) == 0x00)// 闹钟关
+1229   2                      {
+1230   3                              alarm_on[0] = 'O';
+1231   3                              alarm_on[1] = 'F';
+1232   3                              alarm_on[2] = 'F';
+1233   3                      }
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 21  
+
+1234   2                      else
+1235   2                      {
+1236   3                              alarm_on[0] = ' ';
+1237   3                              alarm_on[1] = 'O';
+1238   3                              alarm_on[2] = 'N';      
+1239   3                      }
+1240   2                      lcd1602_one[13] = read_1302(0xc7);
+1241   2                      lcd1602_one[14] = read_1302(0xc9);
+1242   2                      lcd1602_one[15] = read_1302(0xcb);
+1243   2              }
+1244   1              else
+1245   1              {
+1246   2                      write_1302(0x8e,0x00); //WP=0 写操作
+1247   2                      write_1302(0x90,0x00); //关闭充电功能
+1248   2                      write_1302(0x80,0x00);// miao
+1249   2                      write_1302(0x82,0x27);// fen
+1250   2                      write_1302(0x84,0x20);// shi
+1251   2                      write_1302(0x86,0x09);// ri
+1252   2                      write_1302(0x88,0x05);// yue
+1253   2                      write_1302(0x8c,0x11);// nian
+1254   2                      write_1302(0x8a,0x01);// zhou
+1255   2                      write_1302(0x8e,0x80); //WP=1 写保护    
+1256   2              }
+1257   1              lcdbacklight0 = 1;                              
+1258   1              lcdbacklight1 = 0;                              
+1259   1              while(1)
+1260   1              {
+1261   2                      //扫描mode按键有没有被按下
+1262   2                      mode_key_scan();
+1263   2                      //用户一段时间没有操作时恢复正常走时
+1264   2                      if(status != 0 && status!= 20 && status!= 21)
+1265   2                      {
+1266   3                              now_sec = read_1302(0x81);
+1267   3                              now_sec = (now_sec/16)*10+(now_sec%16); 
+1268   3                              if(now_sec < key_click_sec)
+1269   3                              {
+1270   4                                      now_sec += 60;          
+1271   4                              }
+1272   3                              if(now_sec - key_click_sec > 30)
+1273   3                              {
+1274   4                                      status = 20;            
+1275   4                              }               
+1276   3                      }
+1277   2                      //正常走时状态
+1278   2                      if(status == 0)
+1279   2                      {
+1280   3                              get_temperature();
+1281   3                              get_1302time();
+1282   3                              display_1602();
+1283   3                              //检测闹钟
+1284   3                              if(alarm_on[2] == 'N') //闹钟开
+1285   3                              {
+1286   4                                      if(lcd1602_two[1]==alarm_time[0]
+1287   4                                              &&lcd1602_two[2]==alarm_time[1]
+1288   4                                              &&lcd1602_two[4]==alarm_time[3]
+1289   4                                              &&lcd1602_two[5]==alarm_time[4]
+1290   4                                              &&lcd1602_two[7]=='0'
+1291   4                                              &&lcd1602_two[8]=='0') //闹钟时间到
+1292   4                                      {
+1293   5                                              status = 21;                                                    
+1294   5                                      }
+1295   4                              }
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 22  
+
+1296   3                      }
+1297   2                      //保存设置
+1298   2                      else if(status ==20)
+1299   2                      {
+1300   3                              //写入时间到DS1302
+1301   3                              write_1302(0x8e,0x00);//WP=0 写操作
+1302   3                              write_1302(0x80,(lcd1602_two[7]-0x30)*16+(lcd1602_two[8]-0x30));// miao
+1303   3                              write_1302(0x82,(lcd1602_two[4]-0x30)*16+(lcd1602_two[5]-0x30));// fen
+1304   3                              write_1302(0x84,(lcd1602_two[1]-0x30)*16+(lcd1602_two[2]-0x30));// shi
+1305   3                              write_1302(0x86,(lcd1602_one[8]-0x30)*16+(lcd1602_one[9]-0x30));// ri
+1306   3                              write_1302(0x88,(lcd1602_one[5]-0x30)*16+(lcd1602_one[6]-0x30));// yue
+1307   3                              write_1302(0x8c,(lcd1602_one[2]-0x30)*16+(lcd1602_one[3]-0x30));// nian
+1308   3                              write_1302(0x8a,lcd1602_one[11]-0x30);// zhou
+1309   3                              write_1302(0xd0,(alarm_time[3]-0x30)*16+(alarm_time[4]-0x30));// alarm fen
+1310   3                              write_1302(0xd2,(alarm_time[0]-0x30)*16+(alarm_time[1]-0x30));// alarm shi
+1311   3                              if(alarm_on[2] == 'F')
+1312   3                              {
+1313   4                                      write_1302(0xc4,0x00);// alarm is_off
+1314   4                              }
+1315   3                              else
+1316   3                              {
+1317   4                                      write_1302(0xc4,0x01);// alarm is_on
+1318   4                              }
+1319   3                              write_1302(0xc6,lcd1602_one[13]);// logo 1
+1320   3                              write_1302(0xc8,lcd1602_one[14]);// logo 2
+1321   3                              write_1302(0xca,lcd1602_one[15]);// logo 3
+1322   3                              write_1302(0xfe,0xaa);// 判断1302是否被初始化
+1323   3                              write_1302(0x8e,0x80); //WP=1 写保护
+1324   3                              //LCD1602
+1325   3                              write_command(0x0c); //取消液晶闪烁                     
+1326   3                              status = 0;
+1327   3                      }
+1328   2                      //闹钟模式
+1329   2                      else if(status == 21)
+1330   2                      {
+1331   3                              display_1602_alarm();
+1332   3                              for(j=0;j<2;j++) //放两遍音乐 一分钟
+1333   3                              {
+1334   4                                      TMOD=0x11;
+1335   4                                      EA=1;//开总中断
+1336   4                                      ET0=1;
+1337   4                                      ET1=1;
+1338   4                                      cnt=0;
+1339   4                                      TR1=1;
+1340   4                                      i = 0;
+1341   4                                      while(1)
+1342   4                                      {
+1343   5                                              //扫描按键 如有按键按下退出闹钟
+1344   5                                              if(DOWN==0)
+1345   5                                              {
+1346   6                                                      delay(10);
+1347   6                                                      if(DOWN==0)
+1348   6                                                      {
+1349   7                                                              break;
+1350   7                                                      }
+1351   6                                                      while(!DOWN);
+1352   6                                              }                                                                               
+1353   5                                              t=tone[i]; //读音调
+1354   5                                              if(t==0xff) break; //0xff是结束符
+1355   5                                              if(t!=0) //0是休止符    
+1356   5                                              {       
+1357   6                                                      b=cyc[t%10-1]; //根据基本音阶，求出半周期数
+C51 COMPILER V7.50   LCD1602CLOCK                                                          09/23/2014 13:19:30 PAGE 23  
+
+1358   6                                                      if(t<10) b=b*2; //若是低八度音阶，半周期数加倍
+1359   6                                                      if(t>20) b=b/2; //若是高八度音阶，半周期数减半
+1360   6                                                      H0=(65536-b)/256; //根据半周期数，计算T0初值的高字节和低字节
+1361   6                                                      L0=(65536-b)%256;
+1362   6                                                      TR0=1; //启动定时器0发音
+1363   6                                              }
+1364   5                                              cnt=0;
+1365   5                                              a=time[i]; //读节拍
+1366   5                                              while(a>cnt)
+1367   5                                              {
+1368   6                                                      //扫描按键 如有按键按下退出闹钟
+1369   6                                                      if(DOWN==0)
+1370   6                                                      {
+1371   7                                                              delay(10);
+1372   7                                                              if(DOWN==0)
+1373   7                                                              {                                                               
+1374   8                                                                      break;
+1375   8                                                              }
+1376   7                                                              while(!DOWN);
+1377   7                                                      }                                                                               
+1378   6                                              }
+1379   5                                              TR0=0;
+1380   5                                              i++;
+1381   5                                              for(b=0;b<1000;b++); //稍加延时，增强节奏感
+1382   5                                      }
+1383   4                                      EA = 0;
+1384   4                              }
+1385   3                              BEEP=1; //关闭喇叭
+1386   3                              status = 0;                     
+1387   3                      }
+1388   2                      time_set_key_scan();
+1389   2                      alarm_key_scan();
+1390   2                      logo_key_scan();
+1391   2              }
+1392   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   4256    ----
+   CONSTANT SIZE    =    177    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     68       8
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
